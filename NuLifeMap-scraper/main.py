@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware # 🌟 1. 新增這行匯入 CORS 工具
 import uvicorn
 from bs4 import BeautifulSoup
 import traceback
@@ -8,6 +9,14 @@ import re
 from playwright.async_api import async_playwright
 
 app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"], # 允許所有前端來源發送請求
+    allow_credentials=True,
+    allow_methods=["*"], # 允許 POST, GET, 以及預檢的 OPTIONS
+    allow_headers=["*"],
+)
 
 TECH_DICTIONARY = [
     "JavaScript", "TypeScript", "Python", "Java", "C++", "C#", "PHP", "Ruby", "Go",
