@@ -1,7 +1,9 @@
 import React, { useState } from 'react';
-import { Loader2, ChevronDown, ChevronRight, ExternalLink, Clock, Plus, Route, Target } from 'lucide-react';
+import { Loader2, ChevronDown, ChevronRight, ExternalLink, Clock, Plus, Route, Target, LogOut } from 'lucide-react';
 
 export default function Sidebar({ 
+  user,        // 🌟 接收使用者資料
+  onLogout,    // 🌟 接收登出函式
   jobs, 
   loadingData, 
   appMode, 
@@ -12,7 +14,6 @@ export default function Sidebar({
   const [openCategory, setOpenCategory] = useState('housing');
   const [openItemIdx, setOpenItemIdx] = useState(null); 
 
-  // 將資料依類型分組
   const groupedData = {
     housing: { title: '🏠 租屋資訊', color: '#10b981', items: jobs.filter(j => j.type === 'housing') },
     job: { title: '💼 職缺資訊', color: '#3b82f6', items: jobs.filter(j => j.type === 'job') },
@@ -21,7 +22,7 @@ export default function Sidebar({
 
   const handleItemClick = (item, uniqueKey) => {
     setOpenItemIdx(openItemIdx === uniqueKey ? null : uniqueKey);
-    onFocusItem(item); // 通知大老闆，讓大老闆叫地圖移動
+    onFocusItem(item); 
   };
 
   const handleModeClick = (mode) => {
@@ -108,26 +109,36 @@ export default function Sidebar({
         )}
       </div>
 
-      {/* 底部工具列 */}
-      <div style={{ padding: '16px', backgroundColor: '#ffffff', borderTop: '1px solid #e2e8f0', display: 'flex', gap: '8px', zIndex: 10 }}>
-        <button 
-          onClick={() => { setAppMode('normal'); onOpenModal(); }} 
-          style={{ flex: 1, padding: '12px 0', backgroundColor: '#2563eb', color: 'white', borderRadius: '8px', border: 'none', fontWeight: 'bold', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '6px', cursor: 'pointer', transition: 'background-color 0.2s' }}
-        >
-          <Plus size={18} /> 新增
-        </button>
-        <button 
-          onClick={() => handleModeClick('distance')} 
-          style={{ flex: 1, padding: '12px 0', backgroundColor: appMode === 'distance' ? '#eff6ff' : '#f1f5f9', color: appMode === 'distance' ? '#2563eb' : '#475569', borderRadius: '8px', border: appMode === 'distance' ? '1px solid #bfdbfe' : '1px solid transparent', fontWeight: 'bold', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '6px', cursor: 'pointer', transition: 'all 0.2s' }}
-        >
-          <Route size={18} /> 測量距離
-        </button>
-        <button 
-          onClick={() => handleModeClick('radius')} 
-          style={{ flex: 1, padding: '12px 0', backgroundColor: appMode === 'radius' ? '#faf5ff' : '#f1f5f9', color: appMode === 'radius' ? '#9333ea' : '#475569', borderRadius: '8px', border: appMode === 'radius' ? '1px solid #e9d5ff' : '1px solid transparent', fontWeight: 'bold', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '6px', cursor: 'pointer', transition: 'all 0.2s' }}
-        >
-          <Target size={18} /> 範圍探索
-        </button>
+      {/* 🌟 底部操作與使用者資訊區塊 */}
+      <div style={{ padding: '16px', backgroundColor: '#ffffff', borderTop: '1px solid #e2e8f0', zIndex: 10 }}>
+        
+        {/* 工具按鈕 */}
+        <div style={{ display: 'flex', gap: '8px', marginBottom: '16px' }}>
+          <button onClick={() => { setAppMode('normal'); onOpenModal(); }} style={{ flex: 1, padding: '10px 0', backgroundColor: '#2563eb', color: 'white', borderRadius: '8px', border: 'none', fontWeight: 'bold', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '6px', cursor: 'pointer', transition: 'background-color 0.2s', fontSize: '13px' }}>
+            <Plus size={16} /> 新增
+          </button>
+          <button onClick={() => handleModeClick('distance')} style={{ flex: 1, padding: '10px 0', backgroundColor: appMode === 'distance' ? '#eff6ff' : '#f1f5f9', color: appMode === 'distance' ? '#2563eb' : '#475569', borderRadius: '8px', border: appMode === 'distance' ? '1px solid #bfdbfe' : '1px solid transparent', fontWeight: 'bold', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '6px', cursor: 'pointer', transition: 'all 0.2s', fontSize: '13px' }}>
+            <Route size={16} /> 測距
+          </button>
+          <button onClick={() => handleModeClick('radius')} style={{ flex: 1, padding: '10px 0', backgroundColor: appMode === 'radius' ? '#faf5ff' : '#f1f5f9', color: appMode === 'radius' ? '#9333ea' : '#475569', borderRadius: '8px', border: appMode === 'radius' ? '1px solid #e9d5ff' : '1px solid transparent', fontWeight: 'bold', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '6px', cursor: 'pointer', transition: 'all 0.2s', fontSize: '13px' }}>
+            <Target size={16} /> 範圍
+          </button>
+        </div>
+
+        {/* 使用者卡片 */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px', backgroundColor: '#f8fafc', borderRadius: '12px', border: '1px solid #e2e8f0' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <img src={user?.avatar} alt="avatar" style={{ width: '40px', height: '40px', borderRadius: '50%', backgroundColor: '#e2e8f0', objectFit: 'cover' }} />
+            <div>
+              <div style={{ fontWeight: 'bold', color: '#0f172a', fontSize: '14px' }}>{user?.name}</div>
+              <div style={{ color: '#64748b', fontSize: '12px' }}>@{user?.account}</div>
+            </div>
+          </div>
+          <button onClick={onLogout} style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', padding: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '8px', transition: 'background-color 0.2s' }} onMouseEnter={e => e.currentTarget.style.backgroundColor = '#fef2f2'} onMouseLeave={e => e.currentTarget.style.backgroundColor = 'transparent'} title="登出">
+            <LogOut size={18} />
+          </button>
+        </div>
+
       </div>
     </div>
   );

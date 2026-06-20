@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Loader2, Link as LinkIcon, MapPin } from 'lucide-react';
 
 export default function AddModal({
+  user,
   isOpen,
   onClose,
   fetchData
@@ -24,29 +25,38 @@ export default function AddModal({
     try {
       if (addMode === 'url') {
         if (!inputUrl) throw new Error('請輸入網址');
-        let endpoint = inputUrl.includes('591.com.tw') ? 'http://127.0.0.1:8000/scrape/591' : (inputUrl.includes('104.com.tw') || inputUrl.includes('1111.com.tw') ? 'http://127.0.0.1:8000/scrape/url' : '');
-        if(!endpoint) throw new Error('目前僅支援 591 租屋網與 104/1111 人力銀行網址');
-
-        const targetUrl = `${endpoint}?url=${encodeURIComponent(inputUrl)}`;
-        const res = await fetch(targetUrl, { method: 'POST', headers: { 'Accept': 'application/json' }});
+        
+        // 🌟 修正點：將請求打給 Node.js (Port 3000)，而不是直接打給 Python (8000)
+        const res = await fetch('http://127.0.0.1:3000/api/scrape', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: inputUrl, userId: user?.account }) 
+        });
 
         if (!res.ok) {
            const errorData = await res.json().catch(() => ({})); 
-           throw new Error(errorData.detail || '爬蟲請求失敗');
+           throw new Error(errorData.error || '爬蟲請求失敗');
         }
         setSubmitMessage({ type: 'success', text: '資料抓取成功！即將更新地圖...' });
 
       } else {
         if (!customTitle || !customAddress) throw new Error('標題與地址為必填欄位');
-        const res = await fetch('http://127.0.0.1:8000/scrape/custom', {
+        // 🌟 修正點：將請求打給 Node.js (Port 3000)
+        const res = await fetch('http://127.0.0.1:3000/api/markers/custom', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ title: customTitle, address: customAddress, memo: customMemo, aggregate_info: aggregateInfo })
+          body: JSON.stringify({ 
+            title: customTitle, 
+            address: customAddress, 
+            memo: customMemo, 
+            aggregate_info: aggregateInfo, 
+            userId: user?.account 
+          })
         });
         
         if (!res.ok) {
            const errorData = await res.json().catch(() => ({})); 
-           throw new Error(errorData.detail || '新增失敗');
+           throw new Error(errorData.error || '新增失敗');
         }
         setSubmitMessage({ type: 'success', text: '自訂地點新增成功！' });
       }
