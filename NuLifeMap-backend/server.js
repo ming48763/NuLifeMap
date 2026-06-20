@@ -4,11 +4,11 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 const axios = require('axios'); 
 
+const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
+
 const app = express();
 app.use(cors());
 app.use(express.json());
-
-const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
 
 mongoose.connect(process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/NuLifeMapDB')
   .then(() => console.log('✅ 成功連線至 MongoDB'))

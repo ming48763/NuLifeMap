@@ -1,5 +1,5 @@
 from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware # 🌟 1. 新增這行匯入 CORS 工具
+from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 from bs4 import BeautifulSoup
 import traceback
@@ -7,14 +7,22 @@ import json
 import requests 
 import re 
 from playwright.async_api import async_playwright
+import os 
+from dotenv import load_dotenv # 🌟 新增匯入 dotenv 套件
+
+# 🌟 載入同目錄下的 .env 檔案
+load_dotenv()
+
+# 🌟 絕對安全的作法：只從環境變數讀取，不留下任何寫死的金鑰
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
 app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # 允許所有前端來源發送請求
+    allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["*"], # 允許 POST, GET, 以及預檢的 OPTIONS
+    allow_methods=["*"],
     allow_headers=["*"],
 )
 
@@ -29,6 +37,28 @@ TECH_DICTIONARY = [
 @app.get("/")
 def read_root():
     return {"message": "👋 歡迎來到 NuLifeMap 的 Python 爬蟲微服務！"}
+
+# 🌟 核心新增：定義一個將地址轉換為經緯度的非同步函式
+async def geocode_address(address: str) -> dict:
+    if not GOOGLE_API_KEY:
+        print("⚠️ 警告：未設定 GOOGLE_API_KEY，將略過經緯度轉換。請檢查 .env 檔案！")
+        return {"lat": None, "lng": None}
+        
+    try:
+        url = "https://maps.googleapis.com/maps/api/geocode/json"
+        params = {"address": address, "key": GOOGLE_API_KEY}
+        response = requests.get(url, params=params)
+        data = response.json()
+        
+        if data.get("status") == "OK" and len(data.get("results", [])) > 0:
+            location = data["results"][0]["geometry"]["location"]
+            return location
+        else:
+            print(f"⚠️ Geocoding 失敗：{data.get('status')} - 無法解析地址 '{address}'")
+            return {"lat": None, "lng": None}
+    except Exception as e:
+        print(f"❌ 呼叫 Geocoding API 發生錯誤：{e}")
+        return {"lat": None, "lng": None}
 
 # ==================================================
 # 📌 路由 1：擷取職缺 (104/1111等)
@@ -83,10 +113,15 @@ async def scrape_url(url: str):
         for tech in TECH_DICTIONARY:
             if re.search(re.escape(tech), search_text, re.IGNORECASE) and tech not in found_skills:
                 found_skills.append(tech)
+                
+        # 🌟 將抓到的地址轉換為經緯度
+        coordinates = await geocode_address(job_location)
 
         scraped_data = {
             "type": "job",
             "address": job_location,
+            "lat": coordinates.get("lat"), # 🌟 寫入經度
+            "lng": coordinates.get("lng"), # 🌟 寫入緯度
             "memo": f"薪資：{salary_text}",
             "jobInfo": {
                 "jobTitle": job_name,
@@ -107,7 +142,7 @@ async def scrape_url(url: str):
         raise HTTPException(status_code=500, detail=f"內部伺服器錯誤: {str(e)}")
 
 # ==================================================
-# 🌟 新增路由 2：專門擷取 591 租屋網
+# 🌟 路由 2：專門擷取 591 租屋網
 # ==================================================
 @app.post("/scrape/591")
 async def scrape_591(url: str):
@@ -116,18 +151,15 @@ async def scrape_591(url: str):
         
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
-            # 591 對反爬蟲較敏感，需設定逼真的 User-Agent 與視窗大小
             context = await browser.new_context(
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                 viewport={"width": 1920, "height": 1080}
             )
             page = await context.new_page()
             
-            # 載入網頁並稍微等待 JavaScript 渲染
             await page.goto(url, wait_until="networkidle", timeout=30000)
             
             try:
-                # 嘗試等待 591 標題出現 (通常是 h1 或帶有特定 class)
                 await page.wait_for_selector("h1", timeout=8000)
             except Exception:
                 print("⚠️ 警告：等待 591 標題超時，強制擷取目前畫面。")
@@ -137,10 +169,8 @@ async def scrape_591(url: str):
 
         soup = BeautifulSoup(html_content, 'html.parser')
 
-        # 🌟 為了對抗 591 經常變動的標籤，將整頁文字抽出用正規表達式 (Regex) 精準比對
         text_dump = soup.get_text(separator=' ', strip=True)
 
-        # 初始化預設值
         title = "找不到租屋標題"
         address = "找不到地點"
         price = "未知租金"
@@ -150,85 +180,75 @@ async def scrape_591(url: str):
         contact = "未提供"
         is_agent = "未知"
 
-        # 1. 抓取標題
         h1_tag = soup.find('h1')
         if h1_tag: title = h1_tag.get_text(strip=True)
 
-        # 🌟 2. 升級版：抓取價格 (精準計算 月租 與 額外費用總和)
         base_price_val = 0
         extra_fee_val = 0
 
-        # 2-1: 找尋主租金 (尋找網頁中第一個出現的 "X,XXX 元/月")
         price_m = re.search(r'((?:[1-9]\d{0,2}(?:,\d{3})+|\d+))\s*元\s*/\s*月', text_dump)
         if price_m:
             base_price_str = price_m.group(1)
             base_price_val = int(base_price_str.replace(',', ''))
         
-        # 2-2: 找尋額外費用 (尋找 "額外費用 500" 或 "管理費 500" 的數字)
         extra_m = re.search(r'(?:額外費用|管理費)[^\d]*((?:[1-9]\d{0,2}(?:,\d{3})+|\d+))', text_dump)
         if extra_m:
             extra_fee_str = extra_m.group(1)
             extra_fee_val = int(extra_fee_str.replace(',', ''))
         
-        # 2-3: 整合與計算總價
         if base_price_val > 0:
             if extra_fee_val > 0:
                 total_val = base_price_val + extra_fee_val
-                # 組合出：月租 7,499 元 (含額外費用總計 7,999 元/月)
                 price = f"月租 {base_price_val:,} 元 (總支出約 {total_val:,} 元/月)"
             else:
                 price = f"月租 {base_price_val:,} 元/月"
         else:
             price = "未知租金"
 
-        # 🌟 升級版：直接從 HTML 中的 __NUXT__ 變數提取 JSON 資料
         nuxt_match = re.search(r'window\.__NUXT__=(.*)', html_content)
         address = "找不到地址"
         
         if nuxt_match:
             try:
-                # 這裡使用了比較複雜的處理，因為 __NUXT__ 是個 JS 格式，需要轉成 JSON
-                # 為了簡單起見，我們利用 BeautifulSoup 加上 Regex 搜尋 address 欄位
-                # 在您的 HTML 中，地址明確在 positionRound 下面
                 addr_match = re.search(r'"positionRound":{.*?,"address":"([^"]+)"', html_content)
                 if addr_match:
                     address = addr_match.group(1)
             except Exception as e:
                 print(f"解析 Nuxt 資料失敗: {e}")
 
-        # 如果上面抓不到，保留原有的兜底抓取邏輯
         if address == "找不到地址":
              address_tag = soup.select_one('.load-map') or soup.select_one('.address')
              if address_tag: address = address_tag.get_text(strip=True)
 
-        # 4. 抓取坪數
         area_m = re.search(r'(\d+(?:\.\d+)?)\s*坪', text_dump)
         if area_m: area = area_m.group(1) + "坪"
 
-        # 5. 抓取樓層
         floor_m = re.search(r'(\d+F\s*/\s*\d+F|\d+樓\s*/\s*\d+樓)', text_dump, re.IGNORECASE)
         if floor_m: floor = floor_m.group(1).replace(" ", "")
 
-        # 6. 抓取可否開伙
         if "不可開伙" in text_dump or "不可開 伙" in text_dump:
             cooking = "不可開伙"
         elif "可開伙" in text_dump or "可開 伙" in text_dump:
             cooking = "可開伙"
 
-        # 🌟 7. 抓取聯絡方式 (尋找台灣手機號碼格式 09XX-XXX-XXX)
         contact_m = re.search(r'(09\d{2}[- \.]?\d{3}[- \.]?\d{3})', text_dump)
         if contact_m: contact = contact_m.group(1)
 
-        # 🌟 8. 判斷是否為仲介
         if "仲介" in text_dump or "服務費" in text_dump or "經紀人" in text_dump:
             is_agent = "是 (仲介/代理)"
         elif "屋主" in text_dump:
             is_agent = "否 (屋主自租)"
 
-        # 🌟 整理回傳給 Node.js 的資料，加入 contact 與 is_agent
+        # 🌟 取得精確的經緯度座標！
+        print(f"正在將地址 '{address}' 轉換為座標...")
+        coordinates = await geocode_address(address)
+
+        # 🌟 整理回傳給 Node.js 的資料，加入 lat 與 lng
         scraped_data = {
             "type": "housing",
             "address": address,
+            "lat": coordinates.get("lat"), # 🌟 寫入經度
+            "lng": coordinates.get("lng"), # 🌟 寫入緯度
             "memo": f"租金：{price} | {area} | {floor}",
             "houseInfo": {
                 "title": title,
@@ -244,7 +264,6 @@ async def scrape_591(url: str):
 
         print(f"🎉 成功解剖 591！標題：{title} | 聯絡：{contact} | 仲介：{is_agent}")
 
-        # 🚀 呼叫 Node.js 後端 API 存入資料庫
         node_api_url = "http://127.0.0.1:3000/api/markers"
         try:
             node_response = requests.post(node_api_url, json=scraped_data)
