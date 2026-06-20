@@ -45,7 +45,7 @@ export default function Login({ onLogin }) {
           <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: '56px', height: '56px', backgroundColor: '#eff6ff', borderRadius: '16px', color: '#2563eb', marginBottom: '16px' }}>
             <MapPin size={32} />
           </div>
-          <h1 style={{ fontSize: '24px', fontWeight: '900', color: '#0f172a', margin: '0 0 8px 0' }}>NuLifeMap 生存地圖</h1>
+          <h1 style={{ fontSize: '24px', fontWeight: '900', color: '#0f172a', margin: '0 0 8px 0' }}>NuLifeMap 新生活藍圖</h1>
           <p style={{ color: '#64748b', fontSize: '15px', margin: 0 }}>登入以存取您的專屬地圖資料</p>
         </div>
 

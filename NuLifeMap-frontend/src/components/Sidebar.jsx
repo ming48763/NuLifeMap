@@ -33,7 +33,7 @@ export default function Sidebar({
     <div style={{ width: '420px', height: '100%', display: 'flex', flexDirection: 'column', backgroundColor: '#f8fafc', borderRight: '1px solid #e2e8f0', zIndex: 20 }}>
       {/* 標題區 */}
       <div style={{ padding: '24px', backgroundColor: '#ffffff', borderBottom: '1px solid #e2e8f0', zIndex: 10 }}>
-        <h1 style={{ fontSize: '24px', fontWeight: 900, color: '#2563eb', margin: '0 0 8px 0' }}>NuLifeMap 生存地圖</h1>
+        <h1 style={{ fontSize: '24px', fontWeight: 900, color: '#2563eb', margin: '0 0 8px 0' }}>NuLifeMap 新生活藍圖</h1>
         <p style={{ color: '#64748b', fontSize: '14px', margin: 0 }}>
           {loadingData ? "正在載入資料..." : `共找到 ${jobs.length} 筆資料`}
         </p>
