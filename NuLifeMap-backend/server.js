@@ -136,6 +136,9 @@ app.post('/api/scrape', async (req, res) => {
     // 判斷要呼叫 Python 的哪個爬蟲端點
     let endpoint = url.includes('591.com.tw') ? '/scrape/591' : '/scrape/url';
     
+    //  以環境變數讀取爬蟲環境
+    const scraperBaseUrl = process.env.SCRAPER_BASE_URL || 'http://127.0.0.1:8000';
+
     // 注意：把 userId 一併丟給 Python 處理
     const response = await axios.post(`http://127.0.0.1:8000${endpoint}`, { 
       url: url,
