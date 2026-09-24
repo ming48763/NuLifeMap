@@ -13,7 +13,10 @@ export default function Login({ onLogin }) {
     setIsLoading(true);
 
     try {
-      const res = await fetch('http://127.0.0.1:3000/api/login', {
+      // 🌟 讀取雲端後端網址，如果沒有就預設連本地端
+      const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:3000';
+      
+      const res = await fetch(`${API_BASE}/api/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ account, password })
