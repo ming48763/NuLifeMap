@@ -140,7 +140,8 @@ app.post('/api/scrape', async (req, res) => {
     const scraperBaseUrl = process.env.SCRAPER_BASE_URL || 'http://127.0.0.1:8000';
 
     // 注意：把 userId 一併丟給 Python 處理
-    const response = await axios.post(`http://127.0.0.1:8000${endpoint}`, { 
+    // ✅ 這裡改用 ${scraperBaseUrl} 來取代寫死的 127.0.0.1
+    const response = await axios.post(`${scraperBaseUrl}${endpoint}`, {
       url: url,
       user_id: userId || 'mapper'
     });
@@ -182,6 +183,17 @@ app.post('/api/markers/custom', async (req, res) => {
     res.json({ success: true, message: "自訂地點已成功新增", data: newMarker });
   } catch (error) {
     console.error("新增自訂地點失敗:", error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 🌟 新增：刪除特定地點 API
+app.delete('/api/markers/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    await Marker.findByIdAndDelete(id);
+    res.json({ success: true, message: "地點已成功刪除" });
+  } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });

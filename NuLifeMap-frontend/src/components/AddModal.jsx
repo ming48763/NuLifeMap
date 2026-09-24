@@ -23,11 +23,14 @@ export default function AddModal({
     setSubmitMessage({ type: '', text: '' });
 
     try {
+      // 🌟 讀取雲端後端網址，如果沒有就預設連本地端
+      const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:3000';
+
       if (addMode === 'url') {
         if (!inputUrl) throw new Error('請輸入網址');
         
-        // 🌟 修正點：將請求打給 Node.js (Port 3000)，而不是直接打給 Python (8000)
-        const res = await fetch('http://127.0.0.1:3000/api/scrape', {
+        // 🌟 修正點：將請求打給動態的 API_BASE
+        const res = await fetch(`${API_BASE}/api/scrape`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ url: inputUrl, userId: user?.account }) 
@@ -41,8 +44,8 @@ export default function AddModal({
 
       } else {
         if (!customTitle || !customAddress) throw new Error('標題與地址為必填欄位');
-        // 🌟 修正點：將請求打給 Node.js (Port 3000)
-        const res = await fetch('http://127.0.0.1:3000/api/markers/custom', {
+        // 🌟 修正點：將請求打給動態的 API_BASE
+        const res = await fetch(`${API_BASE}/api/markers/custom`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ 
