@@ -12,12 +12,13 @@ const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
 
 // 🌟 1. 定義三位初始使用者的白名單陣列
 const USERS = [
-  { account: 'mapper', password: 'REDACTED', name: '地圖大師', avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=mapper' },
-  { account: 'jobLess01', password: 'REDACTED', name: '求職小菜鳥', avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=jobLess01' },
-  { account: 'bigG', password: 'REDACTED', name: '大G哥', avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=bigG' }
+  { account: 'mapper', password: process.env.USER_MAPPER_PASSWORD, name: '地圖大師', avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=mapper' },
+  { account: 'jobLess01', password: process.env.USER_JOBLESS01_PASSWORD, name: '求職小菜鳥', avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=jobLess01' },
+  { account: 'bigG', password: process.env.USER_BIGG_PASSWORD, name: '大G哥', avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=bigG' }
 ];
 
-mongoose.connect(process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/NuLifeMapDB')
+const mongoUri = process.env.MONGO_URI || process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/NuLifeMapDB';
+mongoose.connect(mongoUri, { dbName: process.env.MONGO_DB_NAME || 'NuLifeMapDB' })
   .then(() => console.log('✅ 成功連線至 MongoDB'))
   .catch(err => console.error('❌ MongoDB 連線失敗:', err));
 
