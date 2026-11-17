@@ -1,11 +1,56 @@
-import React, { useState } from 'react';
-import { MapPin, Lock, User, Loader2 } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { Lock, User, Loader2, X } from 'lucide-react';
+
+const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:3000';
+
+const TEST_ACCOUNTS = [
+  { name: '大學生阿志', account: 'hiremeplz', password: '123456789', avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=hiremeplz' },
+  { name: '美甲師小寧', account: 'needmoneyplz', password: '123456789', avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=needmoneyplz' },
+  { name: '文藝青年雞哥', account: 'joborhungryqq', password: '123456789', avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=joborhungryqq' }
+];
+
+const MASK = '*******';
 
 export default function Login({ onLogin }) {
   const [account, setAccount] = useState('');
   const [password, setPassword] = useState('');
+  const [masked, setMasked] = useState(false);
+  const [useTestAccount, setUseTestAccount] = useState(false);
+  const [showPicker, setShowPicker] = useState(false);
+  const [showNotice, setShowNotice] = useState(false);
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [testAccounts, setTestAccounts] = useState(TEST_ACCOUNTS);
+
+  useEffect(() => {
+    if (!showPicker) return;
+    let cancelled = false;
+
+    const loadProfiles = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/test-accounts`);
+        const data = await res.json();
+        if (!res.ok || !Array.isArray(data.users)) return;
+        const byAccount = Object.fromEntries(data.users.map((u) => [u.account, u]));
+        const merged = TEST_ACCOUNTS.map((base) => {
+          const remote = byAccount[base.account];
+          if (!remote) return base;
+          return {
+            ...base,
+            name: remote.name || base.name,
+            avatar: remote.avatar || base.avatar,
+            avatarOffset: remote.avatarOffset || { x: 0, y: 0 },
+          };
+        });
+        if (!cancelled) setTestAccounts(merged);
+      } catch {
+        // 保持預設測試帳號
+      }
+    };
+
+    loadProfiles();
+    return () => { cancelled = true; };
+  }, [showPicker]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -13,9 +58,6 @@ export default function Login({ onLogin }) {
     setIsLoading(true);
 
     try {
-      // 🌟 讀取雲端後端網址，如果沒有就預設連本地端
-      const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:3000';
-      
       const res = await fetch(`${API_BASE}/api/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -35,73 +77,226 @@ export default function Login({ onLogin }) {
     }
   };
 
+  const handleTestToggle = (checked) => {
+    setUseTestAccount(checked);
+    setError('');
+    if (checked) {
+      setShowPicker(true);
+      return;
+    }
+    setShowPicker(false);
+    setMasked(false);
+    setAccount('');
+    setPassword('');
+  };
+
+  const selectTestAccount = (user) => {
+    setAccount(user.account);
+    setPassword(user.password);
+    setMasked(true);
+    setShowPicker(false);
+    setError('');
+  };
+
+  const closePicker = () => {
+    setShowPicker(false);
+    if (!masked) {
+      setUseTestAccount(false);
+    }
+  };
+
+  const unlockField = (field) => (e) => {
+    if (!masked) return;
+    setMasked(false);
+    setUseTestAccount(false);
+    if (field === 'account') {
+      setAccount(e.target.value === MASK ? '' : e.target.value);
+    } else {
+      setPassword(e.target.value === MASK ? '' : e.target.value);
+    }
+  };
+
   return (
     <div style={{ position: 'fixed', inset: 0, backgroundColor: '#f8fafc', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'system-ui, -apple-system, sans-serif', zIndex: 9999 }}>
-      {/* 背景裝飾 */}
-      <div style={{ position: 'absolute', inset: 0, overflow: 'hidden', pointerEvents: 'none' }}>
-        <div style={{ position: 'absolute', top: '-10%', left: '-10%', width: '50%', height: '50%', background: 'radial-gradient(circle, rgba(37,99,235,0.1) 0%, rgba(255,255,255,0) 70%)' }}></div>
-        <div style={{ position: 'absolute', bottom: '-10%', right: '-10%', width: '50%', height: '50%', background: 'radial-gradient(circle, rgba(168,85,247,0.1) 0%, rgba(255,255,255,0) 70%)' }}></div>
-      </div>
-
-      <div style={{ position: 'relative', backgroundColor: 'white', padding: '40px', borderRadius: '24px', boxShadow: '0 25px 50px -12px rgba(0,0,0,0.1), 0 0 0 1px rgba(0,0,0,0.05)', width: '100%', maxWidth: '400px', zIndex: 10 }}>
-        <div style={{ textAlign: 'center', marginBottom: '32px' }}>
-          <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: '56px', height: '56px', backgroundColor: '#eff6ff', borderRadius: '16px', color: '#2563eb', marginBottom: '16px' }}>
-            <MapPin size={32} />
+      <div style={{ position: 'relative', backgroundColor: 'white', padding: '60px', borderRadius: '36px', boxShadow: '0 25px 50px -12px rgba(0,0,0,0.1), 0 0 0 1px rgba(0,0,0,0.05)', width: '600px', maxWidth: '90vw', minHeight: '540px', boxSizing: 'border-box', zIndex: 10, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+        <div style={{ textAlign: 'center', marginBottom: '48px' }}>
+          <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: '84px', height: '84px', marginBottom: '24px' }}>
+            <img
+              src="/NuLifeMap_LOGO.jpg"
+              alt="NuLifeMap"
+              width={84}
+              height={84}
+              style={{ width: '84px', height: '84px', objectFit: 'contain', objectPosition: 'center', display: 'block' }}
+            />
           </div>
-          <h1 style={{ fontSize: '24px', fontWeight: '900', color: '#0f172a', margin: '0 0 8px 0' }}>NuLifeMap 新生活藍圖</h1>
-          <p style={{ color: '#64748b', fontSize: '15px', margin: 0 }}>登入以存取您的專屬地圖資料</p>
+          <h1 style={{ fontSize: '36px', fontWeight: '900', color: '#0f172a', margin: 0 }}>NuLifeMap 新生活藍圖</h1>
         </div>
 
         {error && (
-          <div style={{ backgroundColor: '#fef2f2', color: '#b91c1c', padding: '12px 16px', borderRadius: '12px', fontSize: '14px', fontWeight: 'bold', marginBottom: '24px', textAlign: 'center', border: '1px solid #fecaca' }}>
+          <div style={{ backgroundColor: '#fef2f2', color: '#b91c1c', padding: '18px 24px', borderRadius: '18px', fontSize: '21px', fontWeight: 'bold', marginBottom: '36px', textAlign: 'center', border: '1px solid #fecaca' }}>
             {error}
           </div>
         )}
 
-        <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+        <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '30px' }}>
           <div>
-            <label style={{ display: 'block', fontSize: '14px', fontWeight: 'bold', color: '#334155', marginBottom: '8px' }}>帳號</label>
+            <label style={{ display: 'block', fontSize: '21px', fontWeight: 'bold', color: '#334155', marginBottom: '12px' }}>帳號</label>
             <div style={{ position: 'relative' }}>
-              <User size={18} color="#94a3b8" style={{ position: 'absolute', top: '50%', left: '12px', transform: 'translateY(-50%)' }} />
+              <User size={27} color="#94a3b8" style={{ position: 'absolute', top: '50%', left: '18px', transform: 'translateY(-50%)' }} />
               <input 
                 type="text" 
-                value={account} 
-                onChange={(e) => setAccount(e.target.value)}
+                value={masked ? MASK : account}
+                onChange={(e) => {
+                  if (masked) unlockField('account')(e);
+                  else setAccount(e.target.value);
+                }}
                 placeholder="輸入您的帳號"
-                required
-                style={{ width: '100%', padding: '12px 12px 12px 40px', borderRadius: '12px', border: '1px solid #cbd5e1', outline: 'none', fontSize: '15px', boxSizing: 'border-box', transition: 'border-color 0.2s' }}
+                required={!masked}
+                autoComplete="username"
+                style={{ width: '100%', padding: '18px 18px 18px 60px', borderRadius: '18px', border: '1px solid #cbd5e1', outline: 'none', fontSize: '22.5px', boxSizing: 'border-box', transition: 'border-color 0.2s', letterSpacing: masked ? '0.12em' : 'normal' }}
               />
             </div>
           </div>
 
           <div>
-            <label style={{ display: 'block', fontSize: '14px', fontWeight: 'bold', color: '#334155', marginBottom: '8px' }}>密碼</label>
+            <label style={{ display: 'block', fontSize: '21px', fontWeight: 'bold', color: '#334155', marginBottom: '12px' }}>密碼</label>
             <div style={{ position: 'relative' }}>
-              <Lock size={18} color="#94a3b8" style={{ position: 'absolute', top: '50%', left: '12px', transform: 'translateY(-50%)' }} />
+              <Lock size={27} color="#94a3b8" style={{ position: 'absolute', top: '50%', left: '18px', transform: 'translateY(-50%)' }} />
               <input 
-                type="password" 
-                value={password} 
-                onChange={(e) => setPassword(e.target.value)}
+                type={masked ? 'text' : 'password'}
+                value={masked ? MASK : password}
+                onChange={(e) => {
+                  if (masked) unlockField('password')(e);
+                  else setPassword(e.target.value);
+                }}
                 placeholder="輸入您的密碼"
-                required
-                style={{ width: '100%', padding: '12px 12px 12px 40px', borderRadius: '12px', border: '1px solid #cbd5e1', outline: 'none', fontSize: '15px', boxSizing: 'border-box', transition: 'border-color 0.2s' }}
+                required={!masked}
+                autoComplete="current-password"
+                style={{ width: '100%', padding: '18px 18px 18px 60px', borderRadius: '18px', border: '1px solid #cbd5e1', outline: 'none', fontSize: '22.5px', boxSizing: 'border-box', transition: 'border-color 0.2s', letterSpacing: masked ? '0.12em' : 'normal' }}
               />
             </div>
           </div>
 
-          <button 
-            type="submit" 
-            disabled={isLoading}
-            style={{ marginTop: '8px', width: '100%', padding: '14px', backgroundColor: '#2563eb', color: 'white', borderRadius: '12px', border: 'none', fontWeight: 'bold', fontSize: '16px', cursor: isLoading ? 'not-allowed' : 'pointer', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '8px', transition: 'background-color 0.2s' }}
-          >
-            {isLoading ? <Loader2 className="animate-spin" size={20} /> : '登入'}
-          </button>
-        </form>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '12px', cursor: 'pointer', userSelect: 'none', color: '#334155', fontSize: '18px', fontWeight: '600' }}>
+            <input
+              type="checkbox"
+              checked={useTestAccount}
+              onChange={(e) => handleTestToggle(e.target.checked)}
+              style={{ width: '20px', height: '20px', accentColor: '#2563eb', cursor: 'pointer' }}
+            />
+            使用測試用帳號
+          </label>
 
-        <div style={{ marginTop: '24px', textAlign: 'center', fontSize: '13px', color: '#94a3b8' }}>
-          測試帳號：mapper / jobLess01 / bigG
-        </div>
+          <div>
+            <button 
+              type="submit" 
+              disabled={isLoading || !account || !password}
+              style={{ marginTop: '12px', width: '100%', padding: '21px', backgroundColor: '#2563eb', color: 'white', borderRadius: '18px', border: 'none', fontWeight: 'bold', fontSize: '24px', cursor: isLoading || !account || !password ? 'not-allowed' : 'pointer', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '12px', transition: 'background-color 0.2s', opacity: isLoading || !account || !password ? 0.7 : 1 }}
+            >
+              {isLoading ? <Loader2 className="animate-spin" size={30} /> : '登入'}
+            </button>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '16px', marginTop: '12px' }}>
+              <button
+                type="button"
+                onClick={() => setShowNotice(true)}
+                style={{ border: 'none', background: 'none', padding: 0, color: '#94a3b8', fontSize: '14px', cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: '3px' }}
+              >
+                註冊帳號
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowNotice(true)}
+                style={{ border: 'none', background: 'none', padding: 0, color: '#94a3b8', fontSize: '14px', cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: '3px' }}
+              >
+                忘記密碼
+              </button>
+            </div>
+          </div>
+        </form>
       </div>
+
+      {showNotice && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="feature-notice-title"
+          onClick={() => setShowNotice(false)}
+          style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(15, 23, 42, 0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 10000, padding: '24px' }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{ width: '100%', maxWidth: '420px', backgroundColor: 'white', borderRadius: '28px', boxShadow: '0 25px 50px -12px rgba(0,0,0,0.25)', padding: '36px 32px', boxSizing: 'border-box', textAlign: 'center' }}
+          >
+            <h2 id="feature-notice-title" style={{ margin: '0 0 12px 0', fontSize: '22px', fontWeight: '800', color: '#0f172a' }}>提示</h2>
+            <p style={{ margin: '0 0 28px 0', fontSize: '18px', color: '#475569', lineHeight: 1.6 }}>此功能開發中，敬請期待~</p>
+            <button
+              type="button"
+              onClick={() => setShowNotice(false)}
+              style={{ width: '100%', padding: '14px', border: 'none', borderRadius: '14px', backgroundColor: '#2563eb', color: 'white', fontSize: '16px', fontWeight: '700', cursor: 'pointer' }}
+            >
+              知道了
+            </button>
+          </div>
+        </div>
+      )}
+
+      {showPicker && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="test-account-title"
+          onClick={closePicker}
+          style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(15, 23, 42, 0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 10000, padding: '24px' }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{ width: '100%', maxWidth: '480px', backgroundColor: 'white', borderRadius: '28px', boxShadow: '0 25px 50px -12px rgba(0,0,0,0.25)', padding: '32px', boxSizing: 'border-box' }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '24px' }}>
+              <h2 id="test-account-title" style={{ margin: 0, fontSize: '24px', fontWeight: '800', color: '#0f172a' }}>選擇測試身分</h2>
+              <button
+                type="button"
+                onClick={closePicker}
+                aria-label="關閉"
+                style={{ width: '40px', height: '40px', border: 'none', borderRadius: '12px', backgroundColor: '#f1f5f9', color: '#475569', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              {testAccounts.map((user) => (
+                <button
+                  key={user.account}
+                  type="button"
+                  onClick={() => selectTestAccount(user)}
+                  style={{ width: '100%', textAlign: 'left', padding: '14px 16px', borderRadius: '16px', border: '1px solid #e2e8f0', backgroundColor: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '14px' }}
+                >
+                  <img
+                    src={user.avatar}
+                    alt=""
+                    width={48}
+                    height={48}
+                    style={{
+                      width: '48px',
+                      height: '48px',
+                      borderRadius: '50%',
+                      objectFit: 'cover',
+                      objectPosition: `${50 + (user.avatarOffset?.x || 0)}% ${50 + (user.avatarOffset?.y || 0)}%`,
+                      backgroundColor: '#e2e8f0',
+                      flexShrink: 0,
+                    }}
+                  />
+                  <span style={{ display: 'flex', flexDirection: 'column', gap: '2px', minWidth: 0 }}>
+                    <span style={{ fontSize: '18px', fontWeight: '700', color: '#0f172a' }}>{user.name}</span>
+                    <span style={{ fontSize: '14px', color: '#64748b' }}>@{user.account}</span>
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

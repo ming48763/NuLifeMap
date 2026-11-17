@@ -5,15 +5,18 @@ export default function MapArea({
   jobs, 
   appMode, 
   setAppMode, 
-  focusedItem 
+  focusedItem,
+  onOpenJobDetail,
+  radiusCenter,
+  setRadiusCenter,
+  radiusMeters,
+  setRadiusMeters,
 }) {
   const [mapError, setMapError] = useState('');
   const [isMapReady, setIsMapReady] = useState(false);
   
   const [distPoints, setDistPoints] = useState([]); 
   const [distResult, setDistResult] = useState(null);
-  const [radiusCenter, setRadiusCenter] = useState(null);
-  const [radiusMeters, setRadiusMeters] = useState(1000);
   const [infoBoxes, setInfoBoxes] = useState([]); 
 
   const mapContainerRef = useRef(null);
@@ -25,6 +28,10 @@ export default function MapArea({
 
   const mapAreaWrapperRef = useRef(null);
   const floatingPanelRef = useRef(null);
+  const projectionOverlayRef = useRef(null);
+  const distLayoutRef = useRef(null);
+  const distBoundsListenerRef = useRef(null);
+  const distRepositionRafRef = useRef(null);
 
   const [panelPos, setPanelPos] = useState({ x: 24, y: 24 });
   const [isDragging, setIsDragging] = useState(false);
@@ -33,47 +40,205 @@ export default function MapArea({
   const apiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY; 
 
   const appStateRef = useRef({ mode: 'normal', distPoints: [], radiusCenter: null });
+  const onOpenJobDetailRef = useRef(onOpenJobDetail);
+  const autoCenteredForRef = useRef(null);
   useEffect(() => {
     appStateRef.current = { mode: appMode, distPoints, radiusCenter };
   }, [appMode, distPoints, radiusCenter]);
+  useEffect(() => {
+    onOpenJobDetailRef.current = onOpenJobDetail;
+  }, [onOpenJobDetail]);
+
+  /** 找出點位最密集網格，回傳該區中心與點集合 */
+  const getDensestCluster = (items, cellSize = 0.06) => {
+    const points = (items || [])
+      .map((j) => ({ lat: parseFloat(j.lat), lng: parseFloat(j.lng) }))
+      .filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lng));
+    if (!points.length) return null;
+
+    const cells = new Map();
+    for (const p of points) {
+      const key = `${Math.floor(p.lat / cellSize)},${Math.floor(p.lng / cellSize)}`;
+      if (!cells.has(key)) cells.set(key, []);
+      cells.get(key).push(p);
+    }
+
+    let densest = points;
+    for (const arr of cells.values()) {
+      if (arr.length > densest.length) densest = arr;
+    }
+
+    const center = {
+      lat: densest.reduce((sum, p) => sum + p.lat, 0) / densest.length,
+      lng: densest.reduce((sum, p) => sum + p.lng, 0) / densest.length,
+    };
+    return { center, points: densest };
+  };
+
+  const escapePopupText = (value) => String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+
+  const closePopupBtnHtml = `<button type="button" class="close-popup-btn" style="flex-shrink: 0; width: 28px; height: 28px; background: #f1f5f9; border: none; font-size: 14px; cursor: pointer; color: #475569; border-radius: 50%; line-height: 1; font-weight: bold; display: inline-flex; align-items: center; justify-content: center;">✕</button>`;
+
+  const ensurePopupMarqueeStyles = () => {
+    if (document.getElementById('nulife-popup-marquee-style')) return;
+    const style = document.createElement('style');
+    style.id = 'nulife-popup-marquee-style';
+    style.textContent = `
+      @keyframes nulife-popup-marquee {
+        0%, 12% { transform: translateX(0); }
+        88%, 100% { transform: translateX(var(--marquee-dx, 0px)); }
+      }
+      .popup-title-track.is-marquee {
+        animation: nulife-popup-marquee 7s ease-in-out infinite alternate;
+      }
+    `;
+    document.head.appendChild(style);
+  };
+
+  const setupPopupTitleMarquee = (popupRoot) => {
+    ensurePopupMarqueeStyles();
+    popupRoot.querySelectorAll('.popup-title-marquee').forEach((wrap) => {
+      const track = wrap.querySelector('.popup-title-track');
+      if (!track) return;
+      track.classList.remove('is-marquee');
+      track.style.removeProperty('--marquee-dx');
+      const overflow = track.scrollWidth - wrap.clientWidth;
+      if (overflow > 2) {
+        track.style.setProperty('--marquee-dx', `${-overflow}px`);
+        track.classList.add('is-marquee');
+      }
+    });
+  };
+
+  const ensureProjectionOverlay = () => {
+    const map = mapInstanceRef.current;
+    if (!map || !window.google?.maps) return null;
+    if (projectionOverlayRef.current) {
+      if (projectionOverlayRef.current.getMap() !== map) {
+        projectionOverlayRef.current.setMap(map);
+      }
+      return projectionOverlayRef.current;
+    }
+    const overlay = new window.google.maps.OverlayView();
+    overlay.onAdd = function onAdd() {};
+    overlay.draw = function draw() {};
+    overlay.onRemove = function onRemove() {};
+    overlay.setMap(map);
+    projectionOverlayRef.current = overlay;
+    return overlay;
+  };
+
+  const latLngToContainerPixelSync = (latLng) => {
+    const overlay = ensureProjectionOverlay();
+    const proj = overlay?.getProjection?.();
+    if (!proj) return null;
+    return proj.fromLatLngToContainerPixel(latLng);
+  };
+
+  const clearDistanceOverlayTracking = () => {
+    if (distBoundsListenerRef.current) {
+      window.google?.maps?.event?.removeListener(distBoundsListenerRef.current);
+      distBoundsListenerRef.current = null;
+    }
+    if (distRepositionRafRef.current) {
+      cancelAnimationFrame(distRepositionRafRef.current);
+      distRepositionRafRef.current = null;
+    }
+    distLayoutRef.current = null;
+  };
+
+  const getMarkerTitle = (item) => {
+    if (!item) return '未命名地點';
+    if (item.type === 'job') {
+      return `${item.jobInfo?.companyName || '未知公司'} - ${item.jobInfo?.jobTitle || '未命名職缺'}`;
+    }
+    if (item.type === 'housing') return item.houseInfo?.title || '未命名租屋';
+    return item.customInfo?.title || '未命名地點';
+  };
+
+  const getMarkerSubline = (item) => {
+    if (!item) return '';
+    if (item.type === 'job') {
+      const salaryRaw = item.jobInfo?.salary || item.memo || '';
+      return String(salaryRaw).replace(/^薪資[：:]\s*/, '') || item.address || '';
+    }
+    if (item.type === 'housing') return item.houseInfo?.price || item.address || '';
+    return item.address || item.memo || '';
+  };
+
+  const repositionDistanceOverlays = () => {
+    const layout = distLayoutRef.current;
+    const bounds = boundsRectRef.current?.getBounds?.();
+    const wrapper = mapAreaWrapperRef.current;
+    if (!layout || !bounds || !wrapper) return;
+
+    const swPx = latLngToContainerPixelSync(bounds.getSouthWest());
+    const nePx = latLngToContainerPixelSync(bounds.getNorthEast());
+    if (!swPx || !nePx) return;
+
+    const viewW = wrapper.offsetWidth;
+    const panelW = floatingPanelRef.current?.offsetWidth || 320;
+    const edge = 24;
+    const rectOnLeft = layout.rectOnLeft;
+
+    // 兩點測距結果卡：固定靠上，並依矩形左右自動選左上／右上，避免壓到範圍框
+    setPanelPos({
+      x: rectOnLeft ? Math.max(edge, viewW - panelW - edge) : edge,
+      y: edge,
+    });
+  };
+
+  const scheduleDistanceOverlayReposition = () => {
+    if (distRepositionRafRef.current) cancelAnimationFrame(distRepositionRafRef.current);
+    distRepositionRafRef.current = requestAnimationFrame(() => {
+      distRepositionRafRef.current = null;
+      repositionDistanceOverlays();
+    });
+  };
 
   const generateItemHtmlList = (group) => {
     return group.map((item, index) => {
       const sourceUrl = item.houseInfo?.sourceUrl || item.jobInfo?.sourceUrl || item.customInfo?.website;
       const linkHtml = sourceUrl ? `<a href="${sourceUrl}" target="_blank" rel="noopener noreferrer" style="display:inline-flex; align-items:center; gap:4px; margin-top:8px; padding:6px 12px; background-color:#eff6ff; color:#2563eb; border-radius:6px; font-size:13px; text-decoration:none; font-weight:600; border:1px solid #bfdbfe;">🔗 前往網頁</a>` : '';
-      const titlePadding = index === 0 ? 'padding-right: 24px;' : '';
+      const closeBtn = index === 0 ? closePopupBtnHtml : '';
 
       if (item.type === 'housing') {
-        return `<div style="margin-bottom: 16px; padding-bottom: 16px; border-bottom: 1px dashed #cbd5e1; text-align: left;"><h3 style="color: #047857; font-size: 18px; font-weight: 800; margin: 0 0 10px 0; ${titlePadding}">🏠 ${item.houseInfo?.title || '租屋'}</h3><div style="color: #475569; font-size: 14px; line-height: 1.8;"><div style="display: flex; margin-bottom: 4px;"><span style="width: 80px; font-weight: 600;">租金：</span><span style="flex: 1; color: #ea580c; font-weight: 600;">${item.houseInfo?.price}</span></div><div style="display: flex; margin-bottom: 4px;"><span style="width: 80px; font-weight: 600;">地址：</span><span style="flex: 1;">${item.address}</span></div>${linkHtml}</div></div>`;
+        const detailBtn = `<button type="button" class="open-job-detail-btn" data-job-id="${item._id}" style="display:inline-flex; align-items:center; gap:4px; margin-top:8px; padding:6px 12px; background-color:#eff6ff; color:#2563eb; border-radius:6px; font-size:13px; font-weight:600; border:1px solid #bfdbfe; cursor:pointer; font-family:inherit;">詳細資訊</button>`;
+        return `<div style="margin-bottom: 16px; padding-bottom: 16px; border-bottom: 1px dashed #cbd5e1; text-align: left;"><div style="display:flex; align-items:center; gap:8px; margin-bottom:10px;"><div class="popup-title-marquee" style="flex:1; min-width:0; overflow:hidden; white-space:nowrap;"><span class="popup-title-track" style="display:inline-block; white-space:nowrap; color:#047857; font-size:18px; font-weight:800; line-height:1.35;">🏠 ${escapePopupText(item.houseInfo?.title || '租屋')}</span></div>${closeBtn}</div><div style="color: #475569; font-size: 14px; line-height: 1.8;"><div style="display: flex; margin-bottom: 4px;"><span style="width: 80px; font-weight: 600;">租金：</span><span style="flex: 1; color: #ea580c; font-weight: 600;">${escapePopupText(item.houseInfo?.price)}</span></div><div style="display: flex; margin-bottom: 4px;"><span style="width: 80px; font-weight: 600;">地址：</span><span style="flex: 1;">${escapePopupText(item.address)}</span></div>${detailBtn}</div></div>`;
       } else if (item.type === 'custom') {
-        const hoursHtml = item.customInfo?.opening_hours?.length > 0 ? `<div style="margin-top: 8px; padding: 8px; background-color: #f8fafc; border-radius: 6px;"><div style="font-weight: 600; margin-bottom: 4px; font-size: 13px;">🕒 營業時間</div>${item.customInfo.opening_hours.map(h => `<div style="font-size: 12px; color: #64748b;">${h}</div>`).join('')}</div>` : '';
-        const photoHtml = item.customInfo?.photo_url ? `<img src="${item.customInfo.photo_url}" style="width: 100%; height: 140px; object-fit: cover; border-radius: 8px; margin-top: 12px;" />` : '';
-        return `<div style="margin-bottom: 16px; padding-bottom: 16px; border-bottom: 1px dashed #cbd5e1; text-align: left;"><h3 style="color: #7e22ce; font-size: 18px; font-weight: 800; margin: 0 0 10px 0; ${titlePadding}">📍 ${item.customInfo?.title}</h3><div style="color: #475569; font-size: 14px; line-height: 1.8;"><div style="display: flex; margin-bottom: 4px;"><span style="width: 50px; font-weight: 600;">地址：</span><span style="flex: 1;">${item.address}</span></div>${item.memo ? `<div style="display: flex; margin-top: 4px;"><span style="width: 50px; font-weight: 600;">備註：</span><span style="flex: 1;">${item.memo}</span></div>` : ''}${hoursHtml}${photoHtml}${linkHtml}</div></div>`;
+        const hoursHtml = item.customInfo?.opening_hours?.length > 0 ? `<div style="margin-top: 8px; padding: 8px; background-color: #f8fafc; border-radius: 6px;"><div style="font-weight: 600; margin-bottom: 4px; font-size: 13px;">🕒 營業時間</div>${item.customInfo.opening_hours.map(h => `<div style="font-size: 12px; color: #64748b;">${escapePopupText(h)}</div>`).join('')}</div>` : '';
+        const photoHtml = item.customInfo?.photo_url ? `<img src="${escapePopupText(item.customInfo.photo_url)}" style="width: 100%; height: 140px; object-fit: cover; border-radius: 8px; margin-top: 12px;" />` : '';
+        return `<div style="margin-bottom: 16px; padding-bottom: 16px; border-bottom: 1px dashed #cbd5e1; text-align: left;"><div style="display:flex; align-items:center; gap:8px; margin-bottom:10px;"><h3 style="color: #7e22ce; font-size: 18px; font-weight: 800; margin: 0; flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">📍 ${escapePopupText(item.customInfo?.title)}</h3>${closeBtn}</div><div style="color: #475569; font-size: 14px; line-height: 1.8;"><div style="display: flex; margin-bottom: 4px;"><span style="width: 50px; font-weight: 600;">地址：</span><span style="flex: 1;">${escapePopupText(item.address)}</span></div>${item.memo ? `<div style="display: flex; margin-top: 4px;"><span style="width: 50px; font-weight: 600;">備註：</span><span style="flex: 1;">${escapePopupText(item.memo)}</span></div>` : ''}${hoursHtml}${photoHtml}${linkHtml}</div></div>`;
       } else {
-        return `<div style="margin-bottom: 16px; padding-bottom: 16px; border-bottom: 1px dashed #cbd5e1; text-align: left;"><h3 style="color: #0f172a; font-size: 18px; font-weight: 800; margin: 0 0 10px 0; ${titlePadding}">💼 ${item.jobInfo?.jobTitle}</h3><div style="color: #475569; font-size: 14px; line-height: 1.8;"><div style="display: flex; margin-bottom: 4px;"><span style="width: 80px; font-weight: 600;">公司：</span><span style="flex: 1;">${item.jobInfo?.companyName}</span></div><div style="display: flex; margin-bottom: 4px;"><span style="width: 80px; font-weight: 600;">地址：</span><span style="flex: 1;">${item.address}</span></div><div style="display: flex; margin-bottom: 4px;"><span style="width: 80px; font-weight: 600;">薪資：</span><span style="flex: 1; color: #ea580c; font-weight: 500;">${item.memo}</span></div>${linkHtml}</div></div>`;
+        const jobTitle = `${item.jobInfo?.companyName || '未知公司'} - ${item.jobInfo?.jobTitle || '未命名職缺'}`;
+        const salaryRaw = item.jobInfo?.salary || item.memo || '未提供';
+        const salary = String(salaryRaw).replace(/^薪資[：:]\s*/, '');
+        const detailBtn = `<button type="button" class="open-job-detail-btn" data-job-id="${item._id}" style="display:inline-flex; align-items:center; gap:4px; margin-top:8px; padding:6px 12px; background-color:#eff6ff; color:#2563eb; border-radius:6px; font-size:13px; font-weight:600; border:1px solid #bfdbfe; cursor:pointer; font-family:inherit;">詳細資訊</button>`;
+        const jobDivider = index < group.length - 1 ? 'margin-bottom: 16px; padding-bottom: 16px; border-bottom: 1px dashed #cbd5e1;' : 'margin-bottom: 0; padding-bottom: 12px;';
+        return `<div style="${jobDivider} text-align: left;"><div style="display:flex; align-items:center; gap:8px; margin-bottom:10px;"><div class="popup-title-marquee" style="flex:1; min-width:0; overflow:hidden; white-space:nowrap;"><span class="popup-title-track" style="display:inline-block; white-space:nowrap; color:#0f172a; font-size:18px; font-weight:800; line-height:1.35;">${escapePopupText(jobTitle)}</span></div>${closeBtn}</div><div style="color: #475569; font-size: 14px; line-height: 1.8;"><div style="display: flex; gap: 6px; margin-bottom: 4px;"><span style="font-weight: 600; flex-shrink: 0;">地址：</span><span style="min-width: 0;">${escapePopupText(item.address || item.jobInfo?.workLocation || '未提供')}</span></div><div style="display: flex; gap: 6px; margin-bottom: 4px;"><span style="font-weight: 600; flex-shrink: 0;">薪資：</span><span style="min-width: 0; color: #ea580c; font-weight: 500;">${escapePopupText(salary)}</span></div>${detailBtn}</div></div>`;
       }
     }).join('');
   };
 
-  // 🌟 新增：功能視窗自動靠右下角的邏輯
-  // 🌟 修改：功能視窗自動靠右下角的邏輯
+  // 測距／範圍：開啟時都移到畫面上方水平置中
   useEffect(() => {
-    const moveToBottomRight = () => {
+    const moveToTopCenter = () => {
       if (mapAreaWrapperRef.current && floatingPanelRef.current) {
         const mapW = mapAreaWrapperRef.current.offsetWidth;
-        const mapH = mapAreaWrapperRef.current.offsetHeight;
         const panelW = floatingPanelRef.current.offsetWidth;
-        const panelH = floatingPanelRef.current.offsetHeight;
-        // 計算右下角位置 (預留 24px 邊距)
-        setPanelPos({ x: Math.max(24, mapW - panelW - 24), y: Math.max(24, mapH - panelH - 24) });
+        setPanelPos({ x: Math.max(24, (mapW - panelW) / 2), y: 24 });
       }
     };
 
-    if (appMode === 'radius' || (appMode === 'distance' && distPoints.length === 0)) {
-      // 使用 setTimeout 等待 React 渲染出新高度後，再抓取寬高並移動
-      setTimeout(moveToBottomRight, 50);
+    if (appMode === 'distance' && distPoints.length === 0) {
+      setTimeout(moveToTopCenter, 50);
+    } else if (appMode === 'radius') {
+      setTimeout(moveToTopCenter, 50);
     }
-  // 👇 這裡加上 radiusCenter
   }, [appMode, distPoints.length, radiusCenter]);
 
   useEffect(() => {
@@ -118,11 +283,46 @@ export default function MapArea({
         if (targetMarker._openPopup) targetMarker._openPopup(false);
       }
     }
-  }, [focusedItem, isMapReady]); 
+  }, [focusedItem, isMapReady]);
+
+  // 登入後（每位使用者一次）：地圖對準點位最密集區域中心
+  useEffect(() => {
+    if (!isMapReady || !mapInstanceRef.current || !window.google?.maps) return;
+    if (!jobs?.length) {
+      autoCenteredForRef.current = null;
+      return;
+    }
+    if (focusedItem) return;
+
+    const userKey = String(jobs[0]?.userId || 'default');
+    if (autoCenteredForRef.current === userKey) return;
+
+    const cluster = getDensestCluster(jobs);
+    if (!cluster) return;
+
+    autoCenteredForRef.current = userKey;
+    const map = mapInstanceRef.current;
+    const bounds = new window.google.maps.LatLngBounds();
+    cluster.points.forEach((p) => bounds.extend(p));
+
+    if (cluster.points.length === 1) {
+      map.setCenter(cluster.center);
+      map.setZoom(14);
+      return;
+    }
+
+    map.fitBounds(bounds, { top: 80, bottom: 80, left: 80, right: 80 });
+    window.google.maps.event.addListenerOnce(map, 'idle', () => {
+      const zoom = map.getZoom();
+      if (typeof zoom === 'number' && zoom > 15) map.setZoom(15);
+      if (typeof zoom === 'number' && zoom < 11) map.setZoom(11);
+    });
+  }, [jobs, isMapReady, focusedItem]); 
 
   useEffect(() => {
     if (appMode !== 'distance') {
       setDistPoints([]); setDistResult(null); setInfoBoxes([]);
+      clearDistanceOverlayTracking();
       if (directionsRendererRef.current) directionsRendererRef.current.setMap(null);
       directionsRendererRef.current = null;
       if (boundsRectRef.current) boundsRectRef.current.setMap(null);
@@ -137,7 +337,7 @@ export default function MapArea({
       m._isPinned = false;
       if (m._closePopup) m._closePopup();
     });
-  }, [appMode]);
+  }, [appMode, setRadiusCenter, setRadiusMeters]);
 
   useEffect(() => {
     if (appMode === 'distance' && distPoints.length === 2 && mapInstanceRef.current) {
@@ -156,7 +356,10 @@ export default function MapArea({
         if (status === 'OK') {
           directionsRendererRef.current.setDirections(response);
           const leg = response.routes[0].legs[0];
-          setDistResult(`🚗 導航距離：${leg.distance.text} (約需 ${leg.duration.text})`);
+          setDistResult({
+            distance: leg.distance.text,
+            duration: leg.duration.text,
+          });
 
           const bounds = response.routes[0].bounds; 
           if (boundsRectRef.current) boundsRectRef.current.setMap(null);
@@ -164,56 +367,60 @@ export default function MapArea({
             bounds: bounds, map: mapInstanceRef.current, fillColor: '#f59e0b', fillOpacity: 0.15, strokeColor: '#ea580c', strokeWeight: 2, clickable: false
           });
 
-          const p1 = distPoints[0];
-          const p2 = distPoints[1];
-          const baseP = parseFloat(p1.lat) < parseFloat(p2.lat) ? p1 : p2; 
-          const secondP = baseP === p1 ? p2 : p1;
-          const leftP = parseFloat(p1.lng) < parseFloat(p2.lng) ? p1 : p2;
-          const rightP = leftP === p1 ? p2 : p1;
+          const startP = distPoints[0];
+          const endP = distPoints[1];
+          // 終點偏西 → 矩形偏左，結果卡靠右上；反之靠左上
+          const rectOnLeft = parseFloat(endP.lng) < parseFloat(startP.lng);
 
           let mapW = mapAreaWrapperRef.current ? mapAreaWrapperRef.current.offsetWidth : 800;
-          let mapH = mapAreaWrapperRef.current ? mapAreaWrapperRef.current.offsetHeight : 600;
 
-          let padTop = (mapH * 0.6);
-          let padBottom = 50; 
-          let padLeft = 50;
-          let padRight = 50;
-          
-          const isBboxLeft = parseFloat(leftP.lat) > parseFloat(rightP.lat);
+          // 上方預留卡片高度，左右預留卡片寬度（對側）
+          const padTop = 280;
+          const padBottom = 56;
+          const padLeft = rectOnLeft ? 56 : Math.min(360, mapW * 0.42);
+          const padRight = rectOnLeft ? Math.min(360, mapW * 0.42) : 56;
 
-          if (isBboxLeft) { 
-            padLeft = 50; padRight = (mapW * 0.6);
-          } else { 
-            padLeft = (mapW * 0.6); padRight = 50;
-          }  
+          mapInstanceRef.current.fitBounds(bounds, { top: padTop, bottom: padBottom, left: padLeft, right: padRight });
 
-          mapInstanceRef.current.fitBounds(bounds, { top: padTop, bottom: padBottom, left: padLeft, right: padRight }); 
-
-          const baseHtml = `<div style="position: relative; padding: 20px 20px 4px 20px; font-family: system-ui, -apple-system, sans-serif;"><div style="display: inline-block; padding: 4px 10px; background-color: #f1f5f9; color: #475569; border-radius: 12px; font-size: 12px; font-weight: bold; margin-bottom: 12px; border: 1px solid #e2e8f0;">📍 基準點 (起點)</div>${generateItemHtmlList([baseP])}</div>`;
-          const secondHtml = `<div style="position: relative; padding: 20px 20px 4px 20px; font-family: system-ui, -apple-system, sans-serif;"><div style="display: inline-block; padding: 4px 10px; background-color: #fef2f2; color: #b91c1c; border-radius: 12px; font-size: 12px; font-weight: bold; margin-bottom: 12px; border: 1px solid #fecaca;">🎯 目的地</div>${generateItemHtmlList([secondP])}</div>`;
-
-          const boxes = [];
-          if (isBboxLeft) {
-            boxes.push({ id: 'base', html: baseHtml, pos: 'bottom-right' });
-            boxes.push({ id: 'second', html: secondHtml, pos: 'top-left' });
-          } else {
-            boxes.push({ id: 'base', html: baseHtml, pos: 'bottom-left' });
-            boxes.push({ id: 'second', html: secondHtml, pos: 'top-right' });
-          }
-
-          setTimeout(() => {
-            setInfoBoxes(boxes);
-            if (!floatingPanelRef.current) return;
-            const panelW = floatingPanelRef.current.offsetWidth;
-            setPanelPos({ x: isBboxLeft ? mapW - panelW - 24 : 24, y: 24 });
-          }, 300);
+          setInfoBoxes([]);
+          clearDistanceOverlayTracking();
+          distLayoutRef.current = { rectOnLeft };
+          ensureProjectionOverlay();
+          // 先立刻靠上角，等 fitBounds 後再依矩形微調
+          const panelW = floatingPanelRef.current?.offsetWidth || 320;
+          const edge = 24;
+          setPanelPos({
+            x: rectOnLeft ? Math.max(edge, mapW - panelW - edge) : edge,
+            y: edge,
+          });
+          scheduleDistanceOverlayReposition();
+          distBoundsListenerRef.current = mapInstanceRef.current.addListener('bounds_changed', scheduleDistanceOverlayReposition);
 
         } else {
-          setDistResult('❌ 無法計算兩點間的導航距離');
+          setDistResult({ error: '無法計算兩點間的導航距離' });
         }
       });
     }
   }, [distPoints, appMode]);
+
+  useEffect(() => {
+    if (!infoBoxes.length) return;
+    const roots = mapAreaWrapperRef.current?.querySelectorAll('[data-info-box="1"]');
+    if (!roots) return;
+    roots.forEach((root) => {
+      setupPopupTitleMarquee(root);
+      root.querySelectorAll('.open-job-detail-btn').forEach((btn) => {
+        if (btn.dataset.bound === '1') return;
+        btn.dataset.bound = '1';
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const jobId = btn.getAttribute('data-job-id');
+          const jobItem = jobs.find((g) => String(g._id) === String(jobId));
+          if (jobItem && onOpenJobDetailRef.current) onOpenJobDetailRef.current(jobItem);
+        });
+      });
+    });
+  }, [infoBoxes, jobs]);
 
   useEffect(() => {
     if (!isMapReady || !window.google?.maps?.geometry || appMode !== 'radius' || !radiusCenter) return;
@@ -281,11 +488,12 @@ export default function MapArea({
       if (mapAreaWrapperRef.current && floatingPanelRef.current) {
         const wrapperRect = mapAreaWrapperRef.current.getBoundingClientRect();
         const panelRect = floatingPanelRef.current.getBoundingClientRect();
-        const maxX = wrapperRect.width - panelRect.width - 5; 
-        const maxY = wrapperRect.height - panelRect.height - 5;
-        if (newX < 5) newX = 5;
+        const edge = 24;
+        const maxX = wrapperRect.width - panelRect.width - edge; 
+        const maxY = wrapperRect.height - panelRect.height - edge;
+        if (newX < edge) newX = edge;
         if (newX > maxX) newX = maxX;
-        if (newY < 5) newY = 5;
+        if (newY < edge) newY = edge;
         if (newY > maxY) newY = maxY;
       } else {
         if (newY < 0) newY = 0; 
@@ -315,11 +523,12 @@ export default function MapArea({
       if (mapAreaWrapperRef.current && floatingPanelRef.current) {
         const wrapperRect = mapAreaWrapperRef.current.getBoundingClientRect();
         const panelRect = floatingPanelRef.current.getBoundingClientRect();
-        const maxX = wrapperRect.width - panelRect.width - 5;
+        const edge = 24;
+        const maxX = wrapperRect.width - panelRect.width - edge;
 
         setPanelPos(prev => {
           if (prev.x > maxX) {
-            return { ...prev, x: maxX < 5 ? 5 : maxX };
+            return { ...prev, x: maxX < edge ? edge : maxX };
           }
           return prev;
         });
@@ -382,7 +591,7 @@ export default function MapArea({
 
           const popupDiv = document.createElement('div');
           popupDiv.style.cssText = `position: absolute; background: rgba(255, 255, 255, 0.95); backdrop-filter: blur(12px); border: 1px solid rgba(226, 232, 240, 0.8); border-radius: 16px; box-shadow: 0 20px 25px -5px rgba(0,0,0,0.1); display: none; z-index: 9999; opacity: 0; transition: opacity 0.2s, transform 0.2s; pointer-events: none;`;
-          popupDiv.innerHTML = `<div style="position: relative; padding: 20px 20px 4px 20px; min-width: 280px; max-width: 320px; max-height: 400px; overflow-y: auto; font-family: system-ui, -apple-system, sans-serif;"><button class="close-popup-btn" style="position: absolute; top: 16px; right: 16px; background: #f1f5f9; border: none; font-size: 14px; cursor: pointer; color: #475569; padding: 4px 8px; border-radius: 50%; line-height: 1; font-weight: bold;">✕</button>${generateItemHtmlList(group)}</div>`;
+          popupDiv.innerHTML = `<div style="position: relative; padding: 16px 16px 4px 16px; min-width: 280px; max-width: 320px; max-height: 400px; overflow-y: auto; font-family: system-ui, -apple-system, sans-serif;">${generateItemHtmlList(group)}</div>`;
 
           markerContainer.appendChild(dotDiv);
           markerContainer.appendChild(popupDiv);
@@ -394,6 +603,7 @@ export default function MapArea({
             if (!keepOthers) markersRef.current.forEach(m => { if (m !== marker && m._closePopup) { m._isPinned = false; m._closePopup(); } });
             popupDiv.style.display = 'block';
             requestAnimationFrame(() => {
+              setupPopupTitleMarquee(popupDiv);
               const mapRect = mapAreaWrapperRef.current.getBoundingClientRect();
               const pRect = popupDiv.getBoundingClientRect();
               let top = 'auto'; let bottom = 'calc(100% + 5px)'; let left = '50%'; let right = 'auto'; let transform = 'translateX(-50%) translateY(0)';
@@ -415,6 +625,14 @@ export default function MapArea({
           marker._openPopup = openPopup; marker._closePopup = closePopup;
 
           popupDiv.querySelector('.close-popup-btn').addEventListener('click', (e) => { e.stopPropagation(); marker._isPinned = false; closePopup(); });
+          popupDiv.querySelectorAll('.open-job-detail-btn').forEach((btn) => {
+            btn.addEventListener('click', (e) => {
+              e.stopPropagation();
+              const jobId = btn.getAttribute('data-job-id');
+              const jobItem = group.find((g) => String(g._id) === String(jobId));
+              if (jobItem && onOpenJobDetailRef.current) onOpenJobDetailRef.current(jobItem);
+            });
+          });
           popupDiv.addEventListener('click', (e) => e.stopPropagation());
 
           // 🌟 優化：智慧懸停邏輯 (滿足需求 4)
@@ -469,49 +687,161 @@ export default function MapArea({
       {appMode === 'radius' && <div style={{ position: 'absolute', inset: 0, border: '6px solid #9333ea', pointerEvents: 'none', zIndex: 15, transition: 'all 0.3s' }} />}
 
       {infoBoxes.map(box => {
-        let boxStyle = {
+        const boxStyle = {
           position: 'absolute', backgroundColor: 'rgba(255, 255, 255, 0.95)', backdropFilter: 'blur(12px)',
           border: '1px solid rgba(226, 232, 240, 0.8)', borderRadius: '16px', boxShadow: '0 20px 25px -5px rgba(0,0,0,0.1)',
-          zIndex: 18, width: '320px', maxHeight: '400px', overflowY: 'auto', animation: 'fadeIn 0.3s ease-out forwards'
+          zIndex: 18, width: '320px', maxHeight: '400px', overflowY: 'auto', animation: 'fadeIn 0.3s ease-out forwards',
+          ...(box.coords?.left != null ? { left: `${box.coords.left}px` } : {}),
+          ...(box.coords?.right != null ? { right: `${box.coords.right}px` } : {}),
+          ...(box.coords?.top != null ? { top: `${box.coords.top}px` } : {}),
+          ...(box.coords?.bottom != null ? { bottom: `${box.coords.bottom}px` } : {}),
         };
-        if (box.pos === 'bottom-right') { boxStyle.right = '24px'; boxStyle.bottom = '24px'; } 
-        else if (box.pos === 'top-left') { boxStyle.left = '24px'; boxStyle.top = '24px'; } 
-        else if (box.pos === 'bottom-left') { boxStyle.left = '24px'; boxStyle.bottom = '24px'; } 
-        else if (box.pos === 'top-right') { boxStyle.right = '24px'; boxStyle.top = '24px'; }
-        return <div key={box.id} style={boxStyle} dangerouslySetInnerHTML={{ __html: box.html }} />;
+        return <div key={box.id} data-info-box="1" style={boxStyle} dangerouslySetInnerHTML={{ __html: box.html }} />;
       })}
 
       <style>{`@keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }`}</style>
 
-      {/* 🌟 瘦身後的測距模式功能視窗 */}
+      {/* 測距：起點／終點／結果整合為同一張卡 */}
       {appMode === 'distance' && (
-        <div ref={floatingPanelRef} style={{ position: 'absolute', top: `${panelPos.y}px`, left: `${panelPos.x}px)`, backgroundColor: 'white', padding: '16px', borderRadius: '16px', boxShadow: '0 10px 25px rgba(0,0,0,0.15)', zIndex: 20, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px', width: '288px', userSelect: isDragging ? 'none' : 'auto', transition: 'left 0.4s cubic-bezier(0.16, 1, 0.3, 1), top 0.4s cubic-bezier(0.16, 1, 0.3, 1)' }}>
-          <div onMouseDown={handleMouseDown} style={{ display: 'flex', justifyContent: 'space-between', width: '100%', alignItems: 'center', marginBottom: '4px', cursor: isDragging ? 'grabbing' : 'grab' }}>
-            <h3 style={{ fontWeight: '900', margin: 0, display: 'flex', alignItems: 'center', gap: '6px', color: '#1e3a8a', fontSize: '16px' }}><Route size={20} color="#2563eb"/> 兩點測距</h3>
-            <button onClick={() => setAppMode('normal')} style={{ background:'none', border:'none', cursor:'pointer', color:'#94a3b8', padding: 0 }}><X size={20}/></button>
+        <div
+          ref={floatingPanelRef}
+          style={{
+            position: 'absolute',
+            top: `${panelPos.y}px`,
+            left: `${panelPos.x}px`,
+            backgroundColor: 'white',
+            padding: '16px',
+            borderRadius: '16px',
+            boxShadow: '0 10px 25px rgba(0,0,0,0.15)',
+            zIndex: 20,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '12px',
+            width: '320px',
+            maxHeight: 'min(520px, calc(100% - 48px))',
+            overflowY: 'auto',
+            userSelect: isDragging ? 'none' : 'auto',
+            transition: isDragging ? 'none' : 'left 0.35s cubic-bezier(0.16, 1, 0.3, 1), top 0.35s cubic-bezier(0.16, 1, 0.3, 1)',
+          }}
+        >
+          <div
+            onMouseDown={handleMouseDown}
+            style={{ position: 'relative', display: 'flex', justifyContent: 'center', width: '100%', alignItems: 'center', cursor: isDragging ? 'grabbing' : 'grab' }}
+          >
+            <h3 style={{ fontWeight: '900', margin: 0, display: 'flex', alignItems: 'center', gap: '6px', color: '#1e3a8a', fontSize: '16px' }}>
+              <Route size={20} color="#2563eb" /> 兩點測距
+            </h3>
+            <button
+              onClick={() => setAppMode('normal')}
+              style={{ position: 'absolute', right: 0, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: '#94a3b8', padding: 0 }}
+            >
+              <X size={20} />
+            </button>
           </div>
-          {distPoints.length === 0 && <p style={{ margin: 0, color: '#475569', fontSize: '14px', fontWeight: '500', textAlign: 'center' }}>👆 請點選地圖<br/>「第一個」圖標</p>}
-          {distPoints.length === 1 && <p style={{ margin: 0, color: '#475569', fontSize: '14px', fontWeight: '500', textAlign: 'center' }}>✌️ 請點選地圖<br/>「第二個」圖標</p>}
-          {distPoints.length === 2 && !distResult && <Loader2 className="animate-spin" color="#2563eb" size={24}/>}
-          {distResult && <div style={{ backgroundColor: '#eff6ff', padding: '12px', borderRadius: '12px', color: '#1e3a8a', fontWeight: 'bold', fontSize: '14px', border: '1px solid #bfdbfe', width: '100%', textAlign: 'center', lineHeight: '1.5' }}>{distResult}</div>}
+
+          {distPoints.length < 2 && (
+            <p style={{ margin: 0, color: '#475569', fontSize: '14px', fontWeight: 500, textAlign: 'center' }}>
+              選擇兩個圖標
+            </p>
+          )}
+
+          {distPoints[0] && (
+            <div style={{ border: '1px solid #bfdbfe', backgroundColor: '#eff6ff', borderRadius: '12px', padding: '12px' }}>
+              <div style={{ fontSize: '12px', fontWeight: 800, color: '#2563eb', marginBottom: '6px' }}>起點</div>
+              <div style={{ fontSize: '14px', fontWeight: 700, color: '#0f172a', lineHeight: 1.4, wordBreak: 'break-word' }}>
+                {getMarkerTitle(distPoints[0])}
+              </div>
+              <div style={{ marginTop: '4px', fontSize: '13px', color: '#475569', lineHeight: 1.4 }}>
+                {getMarkerSubline(distPoints[0])}
+              </div>
+              <div style={{ marginTop: '4px', fontSize: '12px', color: '#64748b' }}>{distPoints[0].address}</div>
+              {(distPoints[0].type === 'job' || distPoints[0].type === 'housing') && (
+                <button
+                  type="button"
+                  onClick={() => onOpenJobDetailRef.current?.(distPoints[0])}
+                  style={{ marginTop: '8px', border: '1px solid #bfdbfe', backgroundColor: '#fff', color: '#2563eb', borderRadius: '8px', padding: '6px 10px', fontSize: '12px', fontWeight: 700, cursor: 'pointer' }}
+                >
+                  詳細資訊
+                </button>
+              )}
+            </div>
+          )}
+
+          {distPoints[1] && (
+            <div style={{ border: '1px solid #bbf7d0', backgroundColor: '#f0fdf4', borderRadius: '12px', padding: '12px' }}>
+              <div style={{ fontSize: '12px', fontWeight: 800, color: '#15803d', marginBottom: '6px' }}>終點</div>
+              <div style={{ fontSize: '14px', fontWeight: 700, color: '#0f172a', lineHeight: 1.4, wordBreak: 'break-word' }}>
+                {getMarkerTitle(distPoints[1])}
+              </div>
+              <div style={{ marginTop: '4px', fontSize: '13px', color: '#475569', lineHeight: 1.4 }}>
+                {getMarkerSubline(distPoints[1])}
+              </div>
+              <div style={{ marginTop: '4px', fontSize: '12px', color: '#64748b' }}>{distPoints[1].address}</div>
+              {(distPoints[1].type === 'job' || distPoints[1].type === 'housing') && (
+                <button
+                  type="button"
+                  onClick={() => onOpenJobDetailRef.current?.(distPoints[1])}
+                  style={{ marginTop: '8px', border: '1px solid #bbf7d0', backgroundColor: '#fff', color: '#15803d', borderRadius: '8px', padding: '6px 10px', fontSize: '12px', fontWeight: 700, cursor: 'pointer' }}
+                >
+                  詳細資訊
+                </button>
+              )}
+            </div>
+          )}
+
+          {distPoints.length === 2 && !distResult && (
+            <div style={{ display: 'flex', justifyContent: 'center', padding: '8px 0' }}>
+              <Loader2 className="animate-spin" color="#2563eb" size={24} />
+            </div>
+          )}
+
+          {distResult && (
+            <div style={{ backgroundColor: '#eff6ff', padding: '12px', borderRadius: '12px', color: '#1e3a8a', fontWeight: 'bold', fontSize: '14px', border: '1px solid #bfdbfe', width: '100%', textAlign: 'center', lineHeight: '1.6', boxSizing: 'border-box' }}>
+              {distResult.error ? (
+                distResult.error
+              ) : (
+                <>
+                  <div>導航距離：{distResult.distance}</div>
+                  <div>預計時間：{distResult.duration}</div>
+                </>
+              )}
+            </div>
+          )}
+
           {distPoints.length === 2 && (
-            <button onClick={() => { markersRef.current.forEach(m => { m._isPinned = false; if (m._closePopup) m._closePopup(); }); setDistPoints([]); setDistResult(null); setInfoBoxes([]); if(directionsRendererRef.current) directionsRendererRef.current.setMap(null); directionsRendererRef.current = null; if(boundsRectRef.current) boundsRectRef.current.setMap(null); boundsRectRef.current = null; }} style={{ marginTop: '4px', padding: '8px', width: '100%', border: 'none', borderRadius: '8px', background: '#e2e8f0', color: '#475569', fontWeight: 'bold', cursor: 'pointer', fontSize: '14px' }}>重新測量</button>
+            <button
+              onClick={() => {
+                markersRef.current.forEach((m) => {
+                  m._isPinned = false;
+                  if (m._closePopup) m._closePopup();
+                });
+                setDistPoints([]);
+                setDistResult(null);
+                setInfoBoxes([]);
+                clearDistanceOverlayTracking();
+                if (directionsRendererRef.current) directionsRendererRef.current.setMap(null);
+                directionsRendererRef.current = null;
+                if (boundsRectRef.current) boundsRectRef.current.setMap(null);
+                boundsRectRef.current = null;
+              }}
+              style={{ padding: '8px', width: '100%', border: 'none', borderRadius: '8px', background: '#e2e8f0', color: '#475569', fontWeight: 'bold', cursor: 'pointer', fontSize: '14px' }}
+            >
+              重新測量
+            </button>
           )}
         </div>
       )}
 
       {appMode === 'radius' && (
-        <div ref={floatingPanelRef} style={{ position: 'absolute', top: `${panelPos.y}px`, left: `${panelPos.x}px)`, backgroundColor: 'white', padding: '16px', borderRadius: '16px', boxShadow: '0 10px 25px rgba(0,0,0,0.15)', zIndex: 10, display: 'flex', flexDirection: 'column', gap: '14px', width: '288px', userSelect: isDragging ? 'none' : 'auto', transition: 'left 0.4s cubic-bezier(0.16, 1, 0.3, 1), top 0.4s cubic-bezier(0.16, 1, 0.3, 1)' }}>
+        <div ref={floatingPanelRef} style={{ position: 'absolute', top: `${panelPos.y}px`, left: `${panelPos.x}px`, backgroundColor: 'white', padding: '16px', borderRadius: '16px', boxShadow: '0 10px 25px rgba(0,0,0,0.15)', zIndex: 10, display: 'flex', flexDirection: 'column', gap: '14px', width: '288px', userSelect: isDragging ? 'none' : 'auto', transition: 'left 0.4s cubic-bezier(0.16, 1, 0.3, 1), top 0.4s cubic-bezier(0.16, 1, 0.3, 1)' }}>
           <div onMouseDown={handleMouseDown} style={{ display: 'flex', justifyContent: 'space-between', width: '100%', alignItems: 'center', cursor: isDragging ? 'grabbing' : 'grab' }}>
             <h3 style={{ fontWeight: '900', margin: 0, display: 'flex', alignItems: 'center', gap: '6px', color: '#581c87', fontSize: '16px' }}><Target size={20} color="#9333ea"/> 範圍探索</h3>
             <button onClick={() => setAppMode('normal')} style={{ background:'none', border:'none', cursor:'pointer', color:'#94a3b8', padding: 0 }}><X size={20}/></button>
           </div>
-          {!radiusCenter ? (
-            <p style={{ margin: 0, color: '#475569', fontSize: '14px', textAlign: 'center', padding: '8px 0', fontWeight: '500' }}>🎯 請點擊地圖上<br/>一個圖標作為中心</p>
-          ) : (
+          {radiusCenter && (
             <>
               <div style={{ display: 'flex', alignItems: 'flex-start', gap: '6px', backgroundColor: '#faf5ff', padding: '10px', borderRadius: '8px', fontSize: '13px', color: '#6b21a8', border: '1px solid #e9d5ff', wordBreak: 'break-all' }}>
-                <MapPin size={16} style={{ flexShrink: 0, marginTop: '2px' }}/> <div><b>中心：</b><br/>{radiusCenter.customInfo?.title || radiusCenter.houseInfo?.title || radiusCenter.jobInfo?.jobTitle || '已選擇'}</div>
+                <MapPin size={16} style={{ flexShrink: 0, marginTop: '2px' }}/> <div><b>中心：</b><br/>{radiusCenter.customInfo?.title || radiusCenter.houseInfo?.title || radiusCenter.jobInfo?.jobTitle || `${radiusCenter.jobInfo?.companyName || ''}`.trim() || '已選擇'}</div>
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                 <label style={{ fontSize: '14px', fontWeight: 'bold', color: '#334155', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>半徑 <span style={{ backgroundColor: '#f1f5f9', padding: '4px 8px', borderRadius: '16px', fontSize: '12px', color: '#475569' }}>{radiusMeters >= 1000 ? (radiusMeters/1000).toFixed(1) + ' km' : radiusMeters + ' m'}</span></label>

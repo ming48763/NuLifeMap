@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NuLifeMap 客戶端模擬</title>
+  <style>
+    :root {
+      --bg: #f8fafc;
+      --card: #ffffff;
+      --text: #0f172a;
+      --muted: #64748b;
+      --line: #e2e8f0;
+      --blue: #2563eb;
+      --red: #dc2626;
+      --green: #15803d;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, sans-serif;
+      background: linear-gradient(180deg, #eff6ff 0%, var(--bg) 40%);
+      color: var(--text);
+      min-height: 100vh;
+      padding: 32px 20px;
+    }
+    .wrap { max-width: 720px; margin: 0 auto; }
+    h1 { margin: 0 0 8px; font-size: 28px; }
+    .sub { margin: 0 0 24px; color: var(--muted); line-height: 1.6; }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 20px;
+      box-shadow: 0 10px 25px rgba(15, 23, 42, 0.06);
+      margin-bottom: 16px;
+    }
+    label { display: block; font-size: 13px; font-weight: 700; color: var(--muted); margin-bottom: 6px; }
+    input, textarea, select {
+      width: 100%;
+      padding: 12px;
+      border: 1px solid #cbd5e1;
+      border-radius: 10px;
+      font: inherit;
+      margin-bottom: 14px;
+    }
+    button {
+      border: none;
+      border-radius: 10px;
+      padding: 12px 16px;
+      font-weight: 700;
+      cursor: pointer;
+      background: var(--blue);
+      color: #fff;
+    }
+    button.secondary { background: #e2e8f0; color: #334155; }
+    .row { display: flex; gap: 10px; flex-wrap: wrap; }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: #eff6ff;
+      color: #1d4ed8;
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .pill.warn { background: #fef2f2; color: var(--red); }
+    .pill.ok { background: #f0fdf4; color: var(--green); }
+    pre {
+      margin: 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      background: #0f172a;
+      color: #e2e8f0;
+      border-radius: 12px;
+      padding: 14px;
+      font-size: 13px;
+      line-height: 1.5;
+      min-height: 120px;
+    }
+    .hint { font-size: 13px; color: var(--muted); line-height: 1.6; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>客戶端模擬頁</h1>
+    <p class="sub">
+      這個分頁會假裝成一般使用者打爬蟲 API（帶模擬客戶端 IP）。
+      本機真實 IP 仍是白名單；用來測試「非本機」的次數上限。
+    </p>
+
+    <div class="card">
+      <div class="row" style="margin-bottom: 12px;">
+        <span id="statusPill" class="pill">讀取額度中...</span>
+        <span id="modePill" class="pill">模擬客戶端</span>
+      </div>
+      <div id="quotaText" class="hint">—</div>
+    </div>
+
+    <div class="card">
+      <label>模擬客戶端 IP</label>
+      <input id="simulateIp" value="203.0.113.10" />
+
+      <label>使用者帳號（userId）</label>
+      <input id="userId" value="jobLess01" />
+
+      <label>要爬的網址</label>
+      <input id="url" placeholder="https://www.104.com.tw/job/..." />
+
+      <label>求職筆記（選填）</label>
+      <textarea id="memo" rows="3" placeholder="可留空"></textarea>
+
+      <div class="row">
+        <button id="scrapeBtn" type="button">送出爬蟲請求</button>
+        <button id="refreshBtn" class="secondary" type="button">重新整理額度</button>
+      </div>
+      <p class="hint" style="margin-top: 12px;">
+        本機開發直接開 NuLifeMap 前端（127.0.0.1）不受限。
+        此頁預設用模擬 IP，方便你驗證限流是否生效。
+      </p>
+    </div>
+
+    <div class="card">
+      <label>回應結果</label>
+      <pre id="output">尚未送出</pre>
+    </div>
+  </div>
+
+  <script>
+    const output = document.getElementById('output');
+    const statusPill = document.getElementById('statusPill');
+    const quotaText = document.getElementById('quotaText');
+
+    function getHeaders() {
+      return {
+        'Content-Type': 'application/json',
+        'X-Simulate-Client-Ip': document.getElementById('simulateIp').value.trim() || '203.0.113.10',
+      };
+    }
+
+    function formatBucket(label, bucket) {
+      if (!bucket || bucket.unlimited) return `${label}：無上限`;
+      const reset = bucket.resetAt ? new Date(bucket.resetAt).toLocaleString() : '—';
+      return `${label}：剩餘 ${bucket.remaining} / ${bucket.limit}（重置 ${reset}）`;
+    }
+
+    async function refreshQuota() {
+      try {
+        const userId = document.getElementById('userId').value.trim();
+        const qs = userId ? `?userId=${encodeURIComponent(userId)}` : '';
+        const res = await fetch(`/api/scrape/rate-limit-status${qs}`, { headers: getHeaders() });
+        const data = await res.json();
+        if (data.unlimited) {
+          statusPill.className = 'pill ok';
+          statusPill.textContent = '無上限（白名單）';
+          quotaText.textContent = `IP：${data.clientIp || '—'}｜帳號：${data.accountId || '—'}`;
+        } else {
+          const ipRemain = data.ip?.remaining ?? data.remaining;
+          const accRemain = data.account?.remaining;
+          const blocked = ipRemain <= 0 || accRemain <= 0;
+          statusPill.className = blocked ? 'pill warn' : 'pill';
+          statusPill.textContent = blocked
+            ? (ipRemain <= 0 ? 'IP 已達上限' : '帳號已達上限')
+            : `IP ${ipRemain}/${data.ip?.limit ?? data.limit} · 帳號 ${accRemain}/${data.account?.limit}`;
+          quotaText.textContent = [
+            formatBucket('IP', data.ip),
+            formatBucket('帳號', data.account),
+            `計數 IP：${data.clientIp || '—'}（模擬：${data.simulated ? '是' : '否'}）`,
+            `帳號：${data.accountId || '—'}`,
+          ].join('｜');
+        }
+      } catch (err) {
+        statusPill.className = 'pill warn';
+        statusPill.textContent = '無法讀取額度';
+        quotaText.textContent = err.message;
+      }
+    }
+
+    document.getElementById('refreshBtn').addEventListener('click', refreshQuota);
+
+    document.getElementById('scrapeBtn').addEventListener('click', async () => {
+      const url = document.getElementById('url').value.trim();
+      const userId = document.getElementById('userId').value.trim();
+      const memo = document.getElementById('memo').value;
+      output.textContent = '請求中...';
+      try {
+        const res = await fetch('/api/scrape', {
+          method: 'POST',
+          headers: getHeaders(),
+          body: JSON.stringify({ url, userId, memo }),
+        });
+        const data = await res.json().catch(() => ({}));
+        output.textContent = `HTTP ${res.status}\n` + JSON.stringify(data, null, 2);
+        await refreshQuota();
+      } catch (err) {
+        output.textContent = err.message;
+      }
+    });
+
+    refreshQuota();
+  </script>
+</body>
+</html>
